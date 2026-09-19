@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>自由旋轉 3D 警車</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0d16; touch-action: none; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    color: #9fb3d9; font: 12.5px/1.4 -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: rgba(18,26,46,.72); padding: 7px 15px; border-radius: 20px;
+    pointer-events: none; white-space: nowrap; backdrop-filter: blur(6px);
+  }
+</style>
+</head>
+<body>
+<div id="hint">單指拖曳：全角度自由旋轉（可轉到車底）　雙指：縮放</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============ 場景 / 相機 / 渲染器 ============ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0d16);
+scene.fog = new THREE.Fog(0x0a0d16, 18, 42);
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 200);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+/* ============ 燈光 ============ */
+scene.add(new THREE.HemisphereLight(0xbcd2ff, 0x2a3350, 1.1));
+
+const key = new THREE.DirectionalLight(0xffffff, 2.6);
+key.position.set(7, 11, 8);
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x6f8cff, 1.0);
+fill.position.set(-8, 5, -6);
+scene.add(fill);
+
+// 底部補光：轉到車底時才看得清
+const under = new THREE.DirectionalLight(0x9fb0ff, 1.1);
+under.position.set(0, -10, 1);
+scene.add(under);
+
+// 車底柔和環境光
+const bounce = new THREE.PointLight(0x88aaff, 0.8, 12);
+bounce.position.set(0, -1.5, 0);
+scene.add(bounce);
+
+/* ============ 材質 ============ */
+const M = {
+  paint:    new THREE.MeshStandardMaterial({ color: 0xf3f6fa, metalness: 0.55, roughness: 0.30 }),
+  paintTop: new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.50, roughness: 0.28 }),
+  dark:     new THREE.MeshStandardMaterial({ color: 0x15171d, metalness: 0.55, roughness: 0.52 }),
+  black:    new THREE.MeshStandardMaterial({ color: 0x0a0a0c, metalness: 0.30, roughness: 0.70 }),
+  glass:    new THREE.MeshStandardMaterial({ color: 0x121c2a, metalness: 0.95, roughness: 0.05,
+                                              transparent: true, opacity: 0.92 }),
+  chrome:   new THREE.MeshStandardMaterial({ color: 0xe6ebf1, metalness: 1.0, roughness: 0.12 }),
+  rim:      new THREE.MeshStandardMaterial({ color: 0xcfd6de, metalness: 0.95, roughness: 0.22 }),
+  tire:     new THREE.MeshStandardMaterial({ color: 0x0b0b0d, roughness: 0.95 }),
+  head:     new THREE.MeshStandardMaterial({ color: 0xfff9e0, emissive: 0xfff0b8, emissiveIntensity: 0.9, roughness: 0.15 }),
+  tail:     new THREE.MeshStandardMaterial({ color: 0xff2a2a, emissive: 0xcc0000, emissiveIntensity: 0.9, roughness: 0.3 }),
+  stripe:   new THREE.MeshStandardMaterial({ color: 0x0a2b62, metalness: 0.35, roughness: 0.45 }),
+  badge:    new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.9, roughness: 0.25 }),
+  red:      new THREE.MeshStandardMaterial({ color: 0xff1a1a, emissive: 0xff0000, emissiveIntensity: 2.5, roughness: 0.3 }),
+  blue:     new THREE.MeshStandardMaterial({ color: 0x1a5cff, emissive: 0x0040ff, emissiveIntensity: 0.05, roughness: 0.3 }),
+  plate:    new THREE.MeshStandardMaterial({ color: 0xf5f7fa, metalness: 0.2, roughness: 0.6 }),
+};
+
+/* ============ 警車 ============ */
+const car = new THREE.Group();
+
+// ---- 底盤 ----
+const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.80, 0.18, 4.00), M.black);
+chassis.position.y = 0.30;
+car.add(chassis);
+
+// 排氣管
+[-0.55, 0.55].forEach(x => {
+  const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.4, 10), M.chrome);
+  pipe.rotation.x = Math.PI / 2;
+  pipe.position.set(x, 0.24, -1.92);
+  car.add(pipe);
+});
+
+// ---- 車身分層（側面更圓潤）----
+const bodyLayers = [
+  { w: 1.86, h: 0.16, y: 0.42, l: 3.88 }, // 底
+  { w: 1.92, h: 0.34, y: 0.68, l: 3.94 }, // 中（最寬）
+  { w: 1.88, h: 0.18, y: 0.94, l: 3.90 }, // 上
+];
+bodyLayers.forEach(({ w, h, y, l }) => {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, l), M.paint);
+  m.position.y = y;
+  car.add(m);
+});
+
+// ---- 引擎蓋 ----
+const hood = new THREE.Mesh(new THREE.BoxGeometry(1.80, 0.10, 1.30), M.paintTop);
+hood.position.set(0, 1.035, 1.28);
+car.add(hood);
+// 引擎蓋折線
+const hoodLine = new THREE.Mesh(new THREE.BoxGeometry(1.60, 0.015, 0.02), M.dark);
+hoodLine.position.set(0, 1.09, 1.05);
+car.add(hoodLine);
+
+// ---- 後車廂 ----
+const trunk = new THREE.Mesh(new THREE.BoxGeometry(1.80, 0.11, 1.00), M.paintTop);
+trunk.position.set(0, 1.04, -1.44);
+car.add(trunk);
+// 尾翼（小鴨尾）
+const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.05, 0.20), M.paintTop);
+spoiler.position.set(0, 1.12, -1.85);
+car.add(spoiler);
+
+// ---- 車艙結構 ----
+const cabinBase = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.50, 2.00), M.glass);
+cabinBase.position.set(0, 1.30, -0.22);
+car.add(cabinBase);
+
+// 車頂
+const roof = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.09, 2.02), M.paintTop);
+roof.position.set(0, 1.575, -0.22);
+car.add(roof);
+
+// A / B / C 柱
+const pillarGeo = new THREE.BoxGeometry(0.075, 0.52, 0.075);
+[[-0.86, 0.74], [0.86, 0.74], [-0.86, -1.18], [0.86, -1.18]].forEach(([x, z]) => {
+  const p = new THREE.Mesh(pillarGeo, M.paint);
+  p.position.set(x, 1.30, z);
+  car.add(p);
+});
+
+// 擋風玻璃（傾斜）
+const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.56, 0.46, 0.035), M.glass);
+windshield.position.set(0, 1.30, 0.76);
+windshield.rotation.x = -0.30;
+car.add(windshield);
+
+// 後窗
+const rearWin = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.42, 0.035), M.glass);
+rearWin.position.set(0, 1.30, -1.21);
+rearWin.rotation.x = 0.26;
+car.add(rearWin);
+
+// 側窗（前後各一）
+[-0.875, 0.875].forEach(x => {
+  const front = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.40, 0.78), M.glass);
+  front.position.set(x, 1.30, 0.15);
+  car.add(front);
+  const rear = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.40, 0.68), M.glass);
+  rear.position.set(x, 1.30, -0.72);
+  car.add(rear);
+});
+
+// ---- 車門縫線 ----
+[-0.955, 0.955].forEach(x => {
+  const line1 = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.55, 0.012), M.dark);
+  line1.position.set(x, 0.70, 0.60);
+  car.add(line1);
+  const line2 = line1.clone();
+  line2.position.set(x, 0.70, -0.65);
+  car.add(line2);
+});
+
+// ---- 門把手 ----
+[-0.965, 0.965].forEach(x => {
+  const h1 = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.05, 0.20), M.chrome);
+  h1.position.set(x, 0.86, 0.30);
+  car.add(h1);
+  const h2 = h1.clone();
+  h2.position.set(x, 0.86, -0.95);
+  car.add(h2);
+});
+
+// ---- 側裙 ----
+[-0.94, 0.94].forEach(x => {
+  const skirt = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.16, 3.20), M.dark);
+  skirt.position.set(x, 0.44, 0);
+  car.add(skirt);
+});
+
+// ---- 前保險桿 / 水箱護罩 ----
+const frontBumper = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.30, 0.28), M.dark);
+frontBumper.position.set(0, 0.46, 1.98);
+car.add(frontBumper);
+
+const grille = new THREE.Mesh(new THREE.BoxGeometry(1.30, 0.22, 0.10), M.black);
+grille.position.set(0, 0.78, 1.98);
+car.add(grille);
+// 水箱護罩橫柵
+for (let i = -1; i <= 1; i++) {
+  const slat = new THREE.Mesh(new THREE.BoxGeometry(1.24, 0.02, 0.11), M.chrome);
+  slat.position.set(0, 0.78 + i * 0.065, 1.985);
+  car.add(slat);
+}
+
+// ---- 後保險桿 ----
+const rearBumper = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.28, 0.26), M.dark);
+rearBumper.position.set(0, 0.46, -1.98);
+car.add(rearBumper);
+
+// ---- 頭燈 ----
+[-0.62, 0.62].forEach(x => {
+  const hl = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.17, 0.06), M.head);
+  hl.position.set(x, 0.82, 1.99);
+  car.add(hl);
+  // 頭燈外框
+  const ring = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.21, 0.03), M.chrome);
+  ring.position.set(x, 0.82, 1.985);
+  car.add(ring);
+});
+
+// 前方向燈
+[-0.90, 0.90].forEach(x => {
+  const s = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.10, 0.05),
+    new THREE.MeshStandardMaterial({ color: 0xffaa33, emissive: 0xff8800, emissiveIntensity: 0.6 }));
+  s.position.set(x, 0.80, 1.99);
+  car.add(s);
+});
+
+// ---- 尾燈 ----
+[-0.66, 0.66].forEach(x => {
+  const tl = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.18, 0.06), M.tail);
+  tl.position.set(x, 0.82, -1.99);
+  car.add(tl);
+});
+
+// ---- 車牌 ----
+const plateF = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.16, 0.03), M.plate);
+plateF.position.set(0, 0.46, 2.11);
+car.add(plateF);
+
+const plateR = plateF.clone();
+plateR.position.set(0, 0.50, -2.10);
+car.add(plateR);
+
+// ---- 側後視鏡 ----
+[-1.02, 1.02].forEach(x => {
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.05), M.dark);
+  arm.position.set(x * 0.95, 1.14, 0.66);
+  car.add(arm);
+  const mirror = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.13, 0.20), M.dark);
+  mirror.position.set(x * 1.08, 1.14, 0.60);
+  car.add(mirror);
+});
+
+// ---- 警用塗裝條紋 ----
+[-0.965, 0.965].forEach(x => {
+  // 深藍主條紋
+  const s1 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.20, 3.40), M.stripe);
+  s1.position.set(x, 0.72, 0);
+  car.add(s1);
+  // 金色細線
+  const s2 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.03, 3.40), M.badge);
+  s2.position.set(x, 0.85, 0);
+  car.add(s2);
+});
+
+// 車門警徽（圓形）
+[-0.975, 0.975].forEach(x => {
+  const badge = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.012, 24), M.badge);
+  badge.rotation.z = Math.PI / 2;
+  badge.position.set(x, 0.72, 0.05);
+  car.add(badge);
+});
+
+// 引擎蓋上的「POLICE」字樣（用方塊拼出簡單效果）
+const policeLetters = new THREE.Group();
+for (let i = 0; i < 6; i++) {
+  const l = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.02, 0.14), M.stripe);
+  l.position.set(-0.35 + i * 0.14, 1.095, 1.40);
+  policeLetters.add(l);
+}
+car.add(policeLetters);
+
+// ---- 車頂警示燈 ----
+const barBase = new THREE.Mesh(new THREE.BoxGeometry(1.10, 0.05, 0.30), M.dark);
+barBase.position.set(0, 1.645, -0.22);
+car.add(barBase);
+
+// 燈條兩側支撐
+[-0.55, 0.55].forEach(x => {
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, 0.32), M.black);
+  cap.position.set(x, 1.69, -0.22);
+  car.add(cap);
+});
+
+// 紅色燈
+const redBar = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.16, 0.26), M.red);
+redBar.position.set(-0.28, 1.72, -0.22);
+car.add(redBar);
+
+// 藍色燈
+const blueBar = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.16, 0.26), M.blue);
+blueBar.position.set(0.28, 1.72, -0.22);
+car.add(blueBar);
+
+// 中間分隔板
+const divider = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.17, 0.27), M.chrome);
+divider.position.set(0, 1.72, -0.22);
+car.add(divider);
+
+// 警示燈發光
+const redGlow = new THREE.PointLight(0xff2020, 0, 4);
+redGlow.position.set(-0.28, 1.85, -0.22);
+car.add(redGlow);
+
+const blueGlow = new THREE.PointLight(0x2060ff, 0, 4);
+blueGlow.position.set(0.28, 1.85, -0.22);
+car.add(blueGlow);
+
+// ---- 天線 ----
+const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.012, 0.70, 6), M.black);
+antenna.position.set(-0.55, 1.95, -1.00);
+car.add(antenna);
+
+const antennaTip = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 8), M.black);
+antennaTip.position.set(-0.55, 2.30, -1.00);
+car.add(antennaTip);
+
+// ---- 車輪 ----
+function createWheel() {
+  const g = new THREE.Group();
+
+  // 輪胎
+  const tireGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.30, 32);
+  tireGeo.rotateZ(Math.PI / 2);
+  const tire = new THREE.Mesh(tireGeo, M.tire);
+  g.add(tire);
+
+  // 胎壁細節（內圈）
+  const wallGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.31, 32);
+  wallGeo.rotateZ(Math.PI / 2);
+  const wall = new THREE.Mesh(wallGeo, M.black);
+  g.add(wall);
+
+  // 輪圈
+  const rimGeo = new THREE.CylinderGeometry(0.27, 0.27, 0.32, 24);
+  rimGeo.rotateZ(Math.PI / 2);
+  const rim = new THREE.Mesh(rimGeo, M.rim);
+  g.add(rim);
+
+  // 輻條（5 輻）
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.055, 0.06), M.rim);
+    spoke.position.set(0, Math.cos(a) * 0.14, Math.sin(a) * 0.14);
+    spoke.rotation.x = a;
+    g.add(spoke);
+  }
+
+  // 中心輪轂
+  const hubGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.33, 16);
+  hubGeo.rotateZ(Math.PI / 2);
+  const hub = new THREE.Mesh(hubGeo, M.chrome);
+  g.add(hub);
+
+  return g;
+}
+
+// 四輪位置
+const wheelPositions = [
+  [-0.88, 1.28], [0.88, 1.28],
+  [-0.88, -1.28], [0.88, -1.28],
+];
+wheelPositions.forEach(([x, z]) => {
+  const w = createWheel();
+  w.position.set(x, 0.42, z);
+  car.add(w);
+});
+
+// ---- 輪拱（深色拱形，增加立體感）----
+wheelPositions.forEach(([x, z]) => {
+  const archGeo = new THREE.CylinderGeometry(0.50, 0.50, 0.06, 20, 1, false, 0, Math.PI);
+  archGeo.rotateZ(Math.PI / 2);
+  archGeo.rotateY(Math.PI / 2);
+  const arch = new THREE.Mesh(archGeo, M.dark);
+  arch.position.set(x, 0.42, z);
+  car.add(arch);
+});
+
+scene.add(car);
+
+/* ============ 自由旋轉控制 ============ */
+// 用四元數累積旋轉，任何方向都能無限轉，不受極角限制
+const cameraQuat = new THREE.Quaternion();
+let distance = 9.5;
+const target = new THREE.Vector3(0, 0.78, 0);
+
+const pointers = new Map();
+
+function updateCamera() {
+  const offset = new THREE.Vector3(0, 0, distance).applyQuaternion(cameraQuat);
+  camera.position.copy(target).add(offset);
+
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(cameraQuat).normalize();
+  const toTarget = new THREE.Vector3().subVectors(target, camera.position).normalize();
+
+  // 避免上方向與視線平行造成畫面翻轉
+  if (Math.abs(up.dot(toTarget)) > 0.9999) {
+    up.set(0, 0, 1).applyQuaternion(cameraQuat).normalize();
+  }
+
+  camera.up.copy(up);
+  camera.lookAt(target);
+}
+
+function rotate(dx, dy) {
+  // 繞世界 Y 軸（水平旋轉）
+  const qY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dx * 0.0075);
+  // 繞世界 X 軸（垂直旋轉）— 可一路翻到車底
+  const qX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), dy * 0.0075);
+  cameraQuat.premultiply(qX).premultiply(qY);
+  cameraQuat.normalize();
+}
+
+const el = renderer.domElement;
+
+el.addEventListener('pointerdown', (e) => {
+  el.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+});
+
+el.addEventListener('pointermove', (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId);
+  const cur = { x: e.clientX, y: e.clientY };
+
+  if (pointers.size === 1) {
+    // 單指：自由旋轉
+    rotate(cur.x - prev.x, cur.y - prev.y);
+    pointers.set(e.pointerId, cur);
+  } else if (pointers.size === 2) {
+    // 雙指：縮放
+    const otherId = [...pointers.keys()].find(id => id !== e.pointerId);
+    const other = pointers.get(otherId);
+    const oldDist = Math.hypot(prev.x - other.x, prev.y - other.y);
+    pointers.set(e.pointerId, cur);
+    const newDist = Math.hypot(cur.x - other.x, cur.y - other.y);
+    if (oldDist > 0 && newDist > 0) {
+      distance *= oldDist / newDist;
+      distance = Math.max(3.5, Math.min(26, distance));
+    }
+  }
+});
+
+el.addEventListener('pointerup', (e) => {
+  pointers.delete(e.pointerId);
+});
+el.addEventListener('pointercancel', (e) => {
+  pointers.delete(e.pointerId);
+});
+
+// 桌機滾輪縮放
+el.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  distance *= 1 + e.deltaY * 0.0012;
+  distance = Math.max(3.5, Math.min(26, distance));
+}, { passive: false });
+
+/* ============ 動畫 ============ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  // 紅藍燈交錯閃爍
+  const t = clock.getElapsedTime();
+  const on = Math.floor(t * 3.5) % 2 === 0;
+
+  M.red.emissiveIntensity  = on ? 2.8 : 0.05;
+  M.blue.emissiveIntensity = on ? 0.05 : 2.8;
+  redGlow.intensity  = on ? 3.2 : 0;
+  blueGlow.intensity = on ? 0 : 3.2;
+
+  updateCamera();
+  renderer.render(scene, camera);
+}
+updateCamera();
+animate();
+
+/* ============ 視窗縮放 ============ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
